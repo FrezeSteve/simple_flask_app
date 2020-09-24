@@ -1,8 +1,8 @@
 from dotenv import load_dotenv
 from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
+from .extensions import db
+from . import views
 import os
-from uuid import uuid4
 
 load_dotenv()
 
@@ -13,9 +13,6 @@ app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY")
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = int(os.environ.get('SQLALCHEMY_TRACK_MODIFICATIONS'))
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 
-db = SQLAlchemy(app)
+db.init_app(app)
 
-
-class User(db.Model):
-    id = db.Column(db.String(40), primary_key=True, default=str(uuid4()))
-    name = db.Column(db.String(128))
+app.register_blueprint(views.main)
