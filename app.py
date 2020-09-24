@@ -1,7 +1,9 @@
-from dotenv import load_dotenv
-from flask import Flask
 from .extensions import db
 from . import views
+from dotenv import load_dotenv
+from flask import Flask
+from flask_migrate import Migrate, MigrateCommand
+from flask_script import Manager
 import os
 
 load_dotenv()
@@ -15,4 +17,12 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 
 db.init_app(app)
 
+migrate = Migrate(app, db)
+manager = Manager(app)
+manager.add_command('db', MigrateCommand)
+
 app.register_blueprint(views.main)
+
+
+if __name__ == "__main__":
+    app.run()
