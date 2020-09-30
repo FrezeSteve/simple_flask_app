@@ -1,5 +1,4 @@
 from .extensions import db
-from . import views
 from dotenv import load_dotenv
 from flask import Flask
 from flask_migrate import Migrate, MigrateCommand
@@ -21,7 +20,9 @@ migrate = Migrate(app, db)
 manager = Manager(app)
 manager.add_command('db', MigrateCommand)
 
-app.register_blueprint(views.main)
+from . import views
+
+app.register_blueprint(views.accounts)
 
 
 if __name__ == "__main__":

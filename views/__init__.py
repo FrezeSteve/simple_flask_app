@@ -1,0 +1,1 @@
+from .accounts_views import accounts
