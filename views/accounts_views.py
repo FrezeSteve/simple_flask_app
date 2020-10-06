@@ -85,7 +85,7 @@ class Register(Resource):
         self.parser = reqparse.RequestParser()
         self.token = None
 
-    def get(self):
+    def verify(self):
         # verify the access token
         if 'x-access-token' in request.headers:
             self.token = request.headers['x-access-token']
@@ -109,6 +109,13 @@ class Register(Resource):
             return {"error": "Invalid Token"}, 401
         except Exception as e:
             return {"error": "Token is invalid, {}".format(e)}, 401
+        return False
+
+    def get(self):
+        # verify
+        v = self.verify()
+        if v:
+            return v
 
         queryset = models.User.query.all()
         users = []
