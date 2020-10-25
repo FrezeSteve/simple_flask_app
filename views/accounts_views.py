@@ -1,20 +1,26 @@
 from .. import models
 from ..app import db, app
-from base64 import urlsafe_b64encode
+from ..utils import VerifyToken
+from base64 import urlsafe_b64encode, b64encode, b64decode
+
 from cryptography.fernet import Fernet
 from cryptography import fernet
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
-from dotenv import load_dotenv, find_dotenv
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import padding
+
 from datetime import timedelta, datetime
+from dotenv import load_dotenv, find_dotenv
 from flask import Blueprint
-from flask_restful import Resource, reqparse, Api
 from flask import jsonify, request
+from flask_restful import Resource, reqparse, Api
 import jwt
 from os import environ
-from werkzeug.security import check_password_hash
 from re import findall
-
+from uuid import uuid4
+from werkzeug.security import check_password_hash
 
 load_dotenv(find_dotenv())
 
@@ -33,20 +39,96 @@ accounts = Blueprint('main', __name__)
 api = Api(accounts)
 
 
+class AnonymousView(Resource):
+    @staticmethod
+    def encode_base64(message):
+        message_bytes = message.encode('ascii')
+        base64_bytes = b64encode(message_bytes)
+        base64_message = base64_bytes.decode('ascii')
+        return base64_message
+
+    def get(self):
+        ip_address = request.remote_addr
+        # generate private key
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+        # serialize the private key for either storage or convert to string
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        public_key = private_key.public_key()
+        public_pem = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        # encode to base64 private key
+        base64_message_private_key = self.encode_base64(private_pem.decode())
+        # encode to base64 public key
+        base64_message = self.encode_base64(public_pem.decode())
+        user_ip_address = models.Anonymous.query.filter_by(user_ip=ip_address).first()
+        if user_ip_address:
+            user_ip_address.private_key = base64_message_private_key
+            db.session.add(user_ip_address)
+        else:
+            db.session.add(models.Anonymous(ip_address, base64_message_private_key))
+        db.session.commit()
+        return {'public_key': base64_message}
+
+
+class CustomEncryption(Resource):
+    pass
+
+
 class Login(Resource):
     def __init__(self):
         self.parser = reqparse.RequestParser()
-        self.time_to_exp = timedelta(minutes=2)
+        self.time_to_exp = timedelta(seconds=59)
+
+    @staticmethod
+    def decode_base64(message):
+        message_bytes = message.encode('ascii')
+        base64_bytes = b64decode(message_bytes)
+        base64_message = base64_bytes.decode('ascii')
+        return base64_message
 
     def post(self):
         self.parser.add_argument('login', type=dict, help="login credentials are needed")
         args = self.parser.parse_args()
         login = args['login']
         if login is not None:
+            ip_address = request.remote_addr
+            user_ip_address = models.Anonymous.query.filter_by(user_ip=ip_address).first()
+            if not user_ip_address:
+                return {"error": "Unknown User"}, 400
+
+            private_key = self.decode_base64(user_ip_address.private_key)
+            private_key = serialization.load_pem_private_key(
+                private_key.encode(),
+                password=None,
+                backend=default_backend()
+            )
+            try:
+                original_message = private_key.decrypt(
+                    b64decode(login["email"]),
+                    padding.OAEP(
+                        mgf=padding.MGF1(algorithm=hashes.SHA1()),
+                        algorithm=hashes.SHA1(),
+                        label=None
+                    )
+                )
+                print(original_message)
+            except ValueError as e:
+                return {'error': "Login Failed"}, 400
             # required fields is email and password
             email = login.get("email", None)
             if email is None or len(email) <= 7:
                 return {"error": "email is invalid or empty"}, 400
+
             if "@" not in email or "." not in email:
                 return {"error": "enter a valid email"}, 400
             password = login.get("password", None)
@@ -55,6 +137,8 @@ class Login(Resource):
             qs = models.User.query.filter_by(email=email).first()
             if qs is None:
                 return {'error': "Invalid login credentials"}, 401
+            elif not qs.active:
+                return {'error': "Cannot login. User is not active"}, 401
             elif qs is not None:
                 if check_password_hash(qs.password, password):
                     time_exp = datetime.utcnow() + self.time_to_exp
@@ -78,51 +162,25 @@ class Login(Resource):
         else:
             return {"error": "Invalid login credentials"}, 401
 
-# todo: finish logout endpoint
+
 class Logout(Resource):
-    def __init__(self):
-        self.parser = reqparse.RequestParser()
-        self.time_to_exp = timedelta(minutes=2)
-
-    def post(self):
-        self.parser.add_argument('login', type=dict, help="login credentials are needed")
-        args = self.parser.parse_args()
-        login = args['login']
-        if login is not None:
-            # required fields is email and password
-            email = login.get("email", None)
-            if email is None or len(email) <= 7:
-                return {"error": "email is invalid or empty"}, 400
-            if "@" not in email or "." not in email:
-                return {"error": "enter a valid email"}, 400
-            password = login.get("password", None)
-            if password is None or len(password) <= 7:
-                return {"error": "Invalid login credentials"}, 401
-            qs = models.User.query.filter_by(email=email).first()
-            if qs is None:
-                return {'error': "Invalid login credentials"}, 401
-            elif qs is not None:
-                if check_password_hash(qs.password, password):
-                    time_exp = datetime.utcnow() + self.time_to_exp
-                    token = jwt.encode({'id': qs.id, 'exp': time_exp}, app.config['SECRET_KEY'], 'HS512')
-                    # check whether the current user is in the token table
-                    qs.last_login = datetime.utcnow()
-                    db.session.add(qs)
-                    user = qs.token
-                    if user is None:
-                        # Add the token to the token table
-                        db.session.add(models.Token(token.decode('UTF-8'), qs.id))
-                        db.session.commit()
-                    else:
-                        user.token = token.decode('UTF-8')
-                        user.expiration = time_exp
-                        db.session.commit()
-                    encrypted_token = cipher_text.encrypt(token)
-                    return {'Token': encrypted_token.decode("UTF-8")}
-                else:
-                    return {"error": "Invalid login credentials"}, 401
-        else:
-            return {"error": "Invalid login credentials"}, 401
+    @staticmethod
+    def post():
+        # verify
+        v = VerifyToken(request, cipher_text, fernet, verify_token=False).verify()
+        if v:
+            return v
+        token = request.headers['x-access-token']
+        token = cipher_text.decrypt(token.encode())
+        data = jwt.decode(token.decode("UTF-8"), app.config['SECRET_KEY'], algorithms=['HS512', 'PS512'])
+        user_instance = models.User.query.filter_by(id=data['id']).first()
+        if user_instance.token is None:
+            return {"error": "User already logged out"}, 401
+        elif user_instance.token.token != token.decode("UTF-8"):
+            return {"error": "Invalid token"}, 401
+        db.session.delete(user_instance.token)
+        db.session.commit()
+        return {"message": "Successfully logged out"}
 
 
 class Register(Resource):
@@ -131,35 +189,10 @@ class Register(Resource):
         self.parser = reqparse.RequestParser()
         self.token = None
 
-    def verify(self):
-        # verify the access token
-        if 'x-access-token' in request.headers:
-            self.token = request.headers['x-access-token']
-        if self.token is None: return {"error": "permission denied"}, 401
-        try:
-            self.token = cipher_text.decrypt(self.token.encode())
-        except fernet.InvalidToken:
-            return {"error": "Invalid Token"}, 401
-        try:
-            data = jwt.decode(self.token.decode("UTF-8"), app.config['SECRET_KEY'], algorithms=['HS512', 'PS512'])
-            # know that the current logged in user is using a token that is in the token table.
-            user_obj = models.User.query.filter_by(id=data['id']).first()
-
-            if user_obj.token is None and not user_obj.admin:
-                raise Exception("You should login as admin")
-            if user_obj.token.token != self.token.decode("UTF-8"):
-                raise Exception("login again")
-        except jwt.exceptions.DecodeError:
-            return {"error": "Invalid Token"}, 401
-        except jwt.exceptions.ExpiredSignatureError:
-            return {"error": "Invalid Token"}, 401
-        except Exception as e:
-            return {"error": "Token is invalid, {}".format(e)}, 401
-        return False
-
-    def get(self):
+    @staticmethod
+    def get():
         # verify
-        v = self.verify()
+        v = VerifyToken(request, cipher_text, fernet, admin=True).verify()
         if v:
             return v
 
@@ -215,4 +248,7 @@ class Register(Resource):
 
 
 api.add_resource(Login, '/login')
+api.add_resource(Logout, '/logout')
 api.add_resource(Register, '/register')
+api.add_resource(CustomEncryption, '/encrypt')
+api.add_resource(AnonymousView, '/session')

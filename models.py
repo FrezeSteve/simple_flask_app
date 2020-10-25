@@ -33,6 +33,22 @@ class User(db.Model):
         return f"User<'{self.username}'>"
 
 
+# Accounts
+class Anonymous(db.Model):
+    id = Column(Integer, primary_key=True)
+    user_ip = Column(Text, unique=True, index=True, nullable=False)
+    private_key = Column(Text, unique=True)
+    create_date = Column(DateTime(), default=datetime.utcnow)
+    last_login = Column(DateTime(), default=datetime.utcnow, nullable=False)
+
+    def __init__(self, user_ip, private_key):
+        self.user_ip = user_ip
+        self.private_key = private_key
+
+    def __repr__(self):
+        return f"<Anonymous '{self.user_ip}'>"
+
+
 class Token(db.Model):
     id = Column(String(40), primary_key=True, unique=True, index=True, nullable=False, default=str(uuid4()))
     token = Column(Text, unique=True, index=True, nullable=False)
