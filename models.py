@@ -1,5 +1,6 @@
 from .extensions import db
 from datetime import datetime, timedelta
+from dateutil import tz
 from sqlalchemy import Column, Integer, DateTime, String, Text, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from uuid import uuid4
@@ -38,12 +39,13 @@ class Anonymous(db.Model):
     id = Column(Integer, primary_key=True)
     user_ip = Column(Text, unique=True, index=True, nullable=False)
     private_key = Column(Text, unique=True)
-    create_date = Column(DateTime(), default=datetime.utcnow)
+    create_date = Column(DateTime())
     last_login = Column(DateTime(), default=datetime.utcnow, nullable=False)
 
     def __init__(self, user_ip, private_key):
         self.user_ip = user_ip
         self.private_key = private_key
+        self.create_date = datetime.now(tz=tz.tzlocal())
 
     def __repr__(self):
         return f"<Anonymous '{self.user_ip}'>"
